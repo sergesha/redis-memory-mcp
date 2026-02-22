@@ -1,0 +1,16 @@
+{
+  "name": "redis-memory-marketplace",
+  "owner": {
+    "name": "redis-memory-mcp"
+  },
+  "description": "Persistent cross-session memory for AI agents — semantic search + KV store with auto-expiry (LRU)",
+  "version": "1.0.0",
+  "plugins": [
+    {
+      "name": "redis-memory",
+      "description": "Long-term self-managing memory for LLM agents via MCP. Semantic vector search + key-value store over Redis with automatic TTL and LRU eviction.",
+      "source": "./plugin",
+      "category": "memory"
+    }
+  ]
+}

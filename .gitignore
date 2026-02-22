@@ -1,0 +1,8 @@
+redis_data/
+embeddings_cache/
+__pycache__/
+*.pyc
+.env
+*.egg-info/
+.venv/
+uv.lock
