@@ -91,8 +91,10 @@ async def kv_set(key: str, value: str, tags: str = "", ttl_days: int = 90) -> st
       Saving with an existing key overwrites the previous value.
     - value (required): The value to store — any string (URL, password, number, JSON, etc).
     - tags: Comma-separated labels for grouping. Example: 'db,production'.
-    - ttl_days: Days until expiry if unused (default 90). TTL resets on every read,
-      so actively used facts never expire. Set 0 for no expiry.
+    - ttl_days: OMIT this parameter in most cases — default is 90 days and TTL resets on
+      every read so popular facts never expire. Only set explicitly when needed:
+      ttl_days=365 for long-lived facts, ttl_days=7 for temporary context.
+      Do NOT pass ttl_days=0 unless the fact must be permanent (no expiry ever).
 
     Examples: kv_set('openai-api-key', 'sk-...', tags='secrets,ai')
               kv_set('user-language', 'Russian', ttl_days=365)
@@ -208,8 +210,10 @@ async def mem_save(text: str, code: str = "", tags: str = "", ttl_days: int = 90
       Example: "We use JWT with 24h expiry. Refresh tokens stored in Redis with 30d TTL."
     - code: Code snippet or structured data associated with this fact.
     - tags: Comma-separated labels for pre-filtering. Example: "auth,jwt,backend".
-    - ttl_days: Days until expiry if unused (default 90). TTL resets on every search hit,
-      so facts that appear in search results never expire. Set 0 for no expiry.
+    - ttl_days: OMIT this parameter in most cases — default is 90 days and TTL resets on
+      every search hit so popular facts never expire. Only set explicitly when needed:
+      ttl_days=365 for long-lived facts, ttl_days=7 for temporary context.
+      Do NOT pass ttl_days=0 unless the fact must be permanent (no expiry ever).
 
     Returns the memory ID (use mem_delete to remove it).
     """
