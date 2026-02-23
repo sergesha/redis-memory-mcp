@@ -397,6 +397,65 @@ async def mem_delete(memory_id: str) -> str:
     return f"Deleted mem[{memory_id}]" if deleted else f"Not found: '{memory_id}'"
 
 
+# ── Unified search ────────────────────────────────────────────────────────────
+
+@mcp.tool()
+async def search(query: str, tags: str = "", top_k: int = 5) -> str:
+    """Search ALL memory at once — both key-value and semantic.
+    Use this as the default search tool. Combines results from both stores.
+
+    Parameters:
+    - query (required): Natural language question, topic, or key name.
+    - tags: Comma-separated tag pre-filter.
+    - top_k: Max semantic results (default 5). All matching kv entries are always included.
+
+    Returns kv matches (by key/value substring) + semantic matches (by meaning), clearly separated.
+    """
+    parts = []
+
+    # 1. Search kv by substring in key and value
+    r = _redis()
+    try:
+        kv_results = []
+        q_lower = query.lower()
+        async for k in r.scan_iter(f"{KV_PREFIX}*", count=200):
+            data = await r.hgetall(k)
+            name  = _decode(k).replace(KV_PREFIX, "")
+            value = _decode(data.get(b"value", b""))
+            label = _decode(data.get(b"label", b""))
+            tags_ = _decode(data.get(b"tags",  b""))
+            if tags:
+                filter_tags = {_sanitize_tag(t) for t in tags.split(",") if _sanitize_tag(t)}
+                entry_tags = set(tags_.split(",")) if tags_ else set()
+                if not filter_tags & entry_tags:
+                    continue
+            if q_lower in name.lower() or q_lower in value.lower() or q_lower in label.lower():
+                ttl_left = await r.ttl(k)
+                ttl_days = int(_decode(data.get(b"ttl_days", b"90")) or 90)
+                if ttl_days > 0:
+                    await r.expire(k, ttl_days * 86400)
+                dt = _fmt_ts(data.get(b"timestamp", b"0"))
+                desc = f" ({label})" if label else ""
+                line = f"[{dt} | ttl:{_fmt_ttl(ttl_left)}] {name}{desc} = {value[:80]}"
+                if tags_: line += f"  [{tags_}]"
+                kv_results.append(line)
+    finally:
+        await r.aclose()
+
+    if kv_results:
+        parts.append("── Key-Value matches ──\n" + "\n".join(kv_results))
+
+    # 2. Semantic search
+    mem_result = await mem_search(query=query, tags=tags, top_k=top_k)
+    if mem_result and mem_result != "No memories found.":
+        parts.append("── Semantic matches ──\n" + mem_result)
+
+    if not parts:
+        return "Nothing found in any memory store."
+
+    return "\n\n".join(parts)
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def main():

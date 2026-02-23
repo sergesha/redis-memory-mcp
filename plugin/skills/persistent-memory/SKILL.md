@@ -8,6 +8,7 @@ description: >
   architecture decision (save), task complete (reflection + save).
 
 allowed_tools:
+  - search
   - kv_set
   - kv_get
   - kv_delete
@@ -25,7 +26,13 @@ Requires MCP server `redis-memory-mcp` to be running.
 
 ## Tools Reference
 
-### Key-Value Storage (`kv_*`) — instant O(1) lookup
+### Key-Value Storage (`kv_*`) — instant O(1) lookup, **short discrete values only**
+
+**Rule: kv is for values you retrieve by exact name.** If the value is longer than ~200 chars
+or describes/explains something — use `mem_save` instead.
+
+✅ Good kv: URL, API key, version number, flag, short JSON config, timezone, username.
+❌ Bad kv: architecture description, tech stack list, workflow explanation, pattern description.
 
 | Tool | Parameters | Purpose |
 |------|-----------|---------|
@@ -34,7 +41,10 @@ Requires MCP server `redis-memory-mcp` to be running.
 | `kv_delete` | `key` (str) | Delete by key. |
 | `kv_list` | `tag` (str, optional), `pattern` (str, optional) | List entries. Filter by tag or glob pattern. |
 
-### Semantic Memory (`mem_*`) — vector similarity search
+### Semantic Memory (`mem_*`) — vector similarity search, **knowledge and descriptions**
+
+**Rule: mem is for knowledge found by meaning.** Descriptions, patterns, decisions, lessons,
+architecture notes, explanations — anything that answers "how", "why", "what happened".
 
 | Tool | Parameters | Purpose |
 |------|-----------|---------|
@@ -42,6 +52,15 @@ Requires MCP server `redis-memory-mcp` to be running.
 | `mem_search` | `query` (str), `tags` (str, optional), `top_k` (int, default 5) | Search by meaning. Refreshes TTL on hits. |
 | `mem_list` | `limit` (int, default 20), `tag` (str, optional) | Browse by recency. |
 | `mem_delete` | `memory_id` (str) | Delete by UUID from search results. |
+
+### Unified Search (`search`) — search everywhere at once
+
+| Tool | Parameters | Purpose |
+|------|-----------|---------|
+| `search` | `query` (str), `tags` (str, optional), `top_k` (int, default 5) | **Default search tool.** Searches both kv (by substring) and mem (by meaning). Use this when you don't know where the fact is stored. |
+
+> `search` is a convenience wrapper. Individual tools (`kv_get`, `kv_list`, `mem_search`) remain available
+> for targeted access when you already know the store.
 
 ### TTL & Auto-Expiry
 
@@ -55,11 +74,13 @@ Requires MCP server `redis-memory-mcp` to be running.
 
 | Need | Tool | Example |
 |------|------|---------|
-| Exact fact by name | `kv_set` / `kv_get` | `kv_set('prod-db-url', 'postgresql://...', label='Production DB URL', tags='db,prod')` |
-| Find by meaning | `mem_save` / `mem_search` | `mem_save(text='JWT with 24h expiry, refresh in Redis', label='JWT auth strategy', tags='auth,jwt')` |
-| Config/credentials | `kv_set` | `kv_set('openai-key', 'sk-...', label='OpenAI API key', tags='secrets')` |
-| Lessons learned | `mem_save` with tags | `mem_save(text='Problem: X. Solution: Y.', label='Lesson: X solved', tags='project,lessons')` |
-| Bug patterns | `mem_save` with code | `mem_save(text='Race condition in auth', label='Auth race condition fix', code='async def ...', tags='bugs')` |
+| Exact short value by name | `kv_set` / `kv_get` | `kv_set('prod-db-url', 'postgresql://host:5432/db', label='Production DB URL', tags='db,prod')` |
+| Search everything at once | `search` | `search(query='database connection', tags='project')` |
+| Find knowledge by meaning | `mem_save` / `mem_search` | `mem_save(text='JWT with 24h expiry, refresh in Redis', label='JWT auth strategy', tags='auth,jwt')` |
+| Config value / credential | `kv_set` | `kv_set('openai-key', 'sk-...', label='OpenAI API key', tags='secrets')` |
+| Architecture / patterns | `mem_save` | `mem_save(text='DDD with layered structure...', label='Project architecture', tags='project,architecture')` |
+| Lessons learned | `mem_save` | `mem_save(text='Problem: X. Solution: Y.', label='Lesson: X solved', tags='project,lessons')` |
+| Bug fix with code | `mem_save` | `mem_save(text='Race condition in auth', label='Auth race condition fix', code='async def ...', tags='bugs')` |
 
 ## Process Triggers
 
@@ -68,21 +89,20 @@ Requires MCP server `redis-memory-mcp` to be running.
 **1. Task Start (MANDATORY)**
 Before ANY new task — search for similar past work:
 ```
-mem_search(query="[task description]", tags="[project]", top_k=5)
-kv_list(pattern="[project]-*")
+search(query="[task description]", tags="[project]", top_k=5)
 ```
 Present findings before starting work.
 
 **2. Problem Encountered**
 When hitting a problem/error:
 ```
-mem_search(query="[error or problem description]", tags="[project]")
+search(query="[error or problem description]", tags="[project]")
 ```
 
 **3. Architecture/Design Decision**
 Before making design choices — check past decisions:
 ```
-mem_search(query="[decision topic]", tags="[project],architecture")
+search(query="[decision topic]", tags="[project],architecture")
 ```
 
 **4. Configuration Lookup**
