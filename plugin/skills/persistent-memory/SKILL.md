@@ -29,7 +29,7 @@ Requires MCP server `redis-memory-mcp` to be running.
 
 | Tool | Parameters | Purpose |
 |------|-----------|---------|
-| `kv_set` | `key` (str), `value` (str), `tags` (str, optional), `ttl_days` (int, default 90) | Store named fact. Overwrites if key exists. |
+| `kv_set` | `key` (str), `value` (str), `label` (str, optional), `tags` (str, optional), `ttl_days` (int, default 90) | Store named fact. `label` — short human-readable description. Overwrites if key exists. |
 | `kv_get` | `key` (str) | Retrieve by exact key. Refreshes TTL on read. |
 | `kv_delete` | `key` (str) | Delete by key. |
 | `kv_list` | `tag` (str, optional), `pattern` (str, optional) | List entries. Filter by tag or glob pattern. |
@@ -38,7 +38,7 @@ Requires MCP server `redis-memory-mcp` to be running.
 
 | Tool | Parameters | Purpose |
 |------|-----------|---------|
-| `mem_save` | `text` (str), `code` (str, optional), `tags` (str, optional), `ttl_days` (int, default 90) | Save with embedding. Found by meaning. |
+| `mem_save` | `text` (str), `label` (str, optional), `code` (str, optional), `tags` (str, optional), `ttl_days` (int, default 90) | Save with embedding. `label` — short human-readable description. Found by meaning. |
 | `mem_search` | `query` (str), `tags` (str, optional), `top_k` (int, default 5) | Search by meaning. Refreshes TTL on hits. |
 | `mem_list` | `limit` (int, default 20), `tag` (str, optional) | Browse by recency. |
 | `mem_delete` | `memory_id` (str) | Delete by UUID from search results. |
@@ -47,7 +47,7 @@ Requires MCP server `redis-memory-mcp` to be running.
 
 - **Default: 90 days** — unused facts auto-expire
 - **TTL resets on read** — popular facts live forever
-- **`ttl_days=0`** — permanent, never expires (use for critical config, API keys)
+- **`ttl_days=0`** — permanent, never expires. Use only in extreme cases where loss is truly unacceptable.
 - **`ttl_days=7`** or `30` — short-lived context
 - **volatile-lru** — Redis evicts least-recently-used facts with TTL under memory pressure
 
@@ -55,11 +55,11 @@ Requires MCP server `redis-memory-mcp` to be running.
 
 | Need | Tool | Example |
 |------|------|---------|
-| Exact fact by name | `kv_set` / `kv_get` | `kv_set('prod-db-url', 'postgresql://...', tags='db,prod', ttl_days=0)` |
-| Find by meaning | `mem_save` / `mem_search` | `mem_save(text='JWT with 24h expiry, refresh in Redis', tags='auth,jwt')` |
-| Config/credentials | `kv_set` with `ttl_days=0` | `kv_set('openai-key', 'sk-...', tags='secrets', ttl_days=0)` |
-| Lessons learned | `mem_save` with tags | `mem_save(text='Problem: X. Solution: Y. Insight: Z.', tags='project,lessons')` |
-| Bug patterns | `mem_save` with code | `mem_save(text='Race condition in auth', code='async def ...', tags='bugs')` |
+| Exact fact by name | `kv_set` / `kv_get` | `kv_set('prod-db-url', 'postgresql://...', label='Production DB URL', tags='db,prod')` |
+| Find by meaning | `mem_save` / `mem_search` | `mem_save(text='JWT with 24h expiry, refresh in Redis', label='JWT auth strategy', tags='auth,jwt')` |
+| Config/credentials | `kv_set` | `kv_set('openai-key', 'sk-...', label='OpenAI API key', tags='secrets')` |
+| Lessons learned | `mem_save` with tags | `mem_save(text='Problem: X. Solution: Y.', label='Lesson: X solved', tags='project,lessons')` |
+| Bug patterns | `mem_save` with code | `mem_save(text='Race condition in auth', label='Auth race condition fix', code='async def ...', tags='bugs')` |
 
 ## Process Triggers
 
@@ -98,6 +98,7 @@ After solving a non-trivial problem:
 ```
 mem_save(
   text="Problem: [X]. Solution: [Y]. Key insight: [Z]. Future: [when to reuse].",
+  label="[Short description of what was solved]",
   tags="[project],[technology],[type]"
 )
 ```
@@ -107,6 +108,7 @@ Reflection: What worked? What didn't? What patterns emerged?
 ```
 mem_save(
   text="Task: [X]. Approach: [Y]. Lesson: [Z]. Would do differently: [W].",
+  label="[Task name] — lessons learned",
   tags="[project],lessons"
 )
 ```
@@ -115,6 +117,7 @@ mem_save(
 ```
 mem_save(
   text="Bug: [desc]. Root cause: [X]. Fix: [Y]. Prevention: [Z].",
+  label="Bug: [short description]",
   code="[relevant code snippet]",
   tags="[project],bug-fix,[technology]"
 )
@@ -124,19 +127,21 @@ mem_save(
 ```
 mem_save(
   text="Decision: [X]. Rationale: [Y]. Alternatives: [Z]. Context: [W].",
+  label="Architecture decision: [topic]",
   tags="[project],architecture,[domain]"
 )
 ```
 
 **9. Config/Credentials**
 ```
-kv_set(key="[project]-db-url", value="postgresql://...", tags="[project],db,prod", ttl_days=0)
+kv_set(key="[project]-db-url", value="postgresql://...", label="[Project] DB URL", tags="[project],db,prod")
 ```
 
 **10. Pattern Recognized**
 ```
 mem_save(
   text="Pattern: [name]. When: [context]. How: [approach]. Why: [benefits].",
+  label="Pattern: [name]",
   code="[example code]",
   tags="[project],pattern,[technology]"
 )
@@ -158,7 +163,7 @@ This ensures facts don't mix between projects. Use consistent project identifier
 3. **ALWAYS reflect after long tasks** — extract lessons
 4. **ALWAYS tag with project** — multi-project isolation
 5. **ALWAYS use kv_* for named facts** — faster, more reliable than search
-6. **Use ttl_days=0 for permanent facts** — API keys, critical config
+6. **`ttl_days=0` only in extreme cases** — permanent storage, no expiry ever. Almost never needed — TTL auto-resets on every read.
 
 ## Error Handling
 
