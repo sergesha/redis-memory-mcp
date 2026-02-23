@@ -26,7 +26,7 @@ services:
       redis:
         condition: service_healthy
     command: >
-      bash -c "redis-cli -h redis FT.CREATE idx:memories ON HASH PREFIX 1 mem: SCHEMA key TAG SEPARATOR , text TEXT code TEXT tags TAG SEPARATOR , vector VECTOR HNSW 6 TYPE FLOAT32 DIM 768 DISTANCE_METRIC COSINE timestamp NUMERIC || echo 'Index already exists'"
+      bash -c "redis-cli -h redis FT.CREATE idx:memories ON HASH PREFIX 1 mem: SCHEMA label TEXT text TEXT code TEXT tags TAG SEPARATOR , vector VECTOR HNSW 6 TYPE FLOAT32 DIM 768 DISTANCE_METRIC COSINE timestamp NUMERIC || echo 'Index already exists'"
     restart: "no"
 
   embeddings:

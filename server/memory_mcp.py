@@ -49,6 +49,7 @@ async def _ensure_index(r):
         await r.execute_command(
             "FT.CREATE", INDEX, "ON", "HASH", "PREFIX", "1", MEM_PREFIX, "SCHEMA",
             "text",      "TEXT",
+            "label",     "TEXT",
             "code",      "TEXT",
             "tags",      "TAG",    "SEPARATOR", ",",
             "vector",    "VECTOR", "HNSW", "6", "TYPE", "FLOAT32", "DIM", "768", "DISTANCE_METRIC", "COSINE",
@@ -82,7 +83,7 @@ def _sanitize_tag(tag: str) -> str:
 # ── KV tools ──────────────────────────────────────────────────────────────────
 
 @mcp.tool()
-async def kv_set(key: str, value: str, tags: str = "", ttl_days: int = 90) -> str:
+async def kv_set(key: str, value: str, label: str = "", tags: str = "", ttl_days: int = 90) -> str:
     """Store a key/value fact — instant lookup, no embeddings.
     Use for discrete facts with a known name: credentials, config, settings, names.
 
@@ -90,32 +91,36 @@ async def kv_set(key: str, value: str, tags: str = "", ttl_days: int = 90) -> st
     - key (required): Unique identifier. Use slugs like 'prod-db-url', 'user-timezone'.
       Saving with an existing key overwrites the previous value.
     - value (required): The value to store — any string (URL, password, number, JSON, etc).
+    - label: Short human-readable description (shown in lists). Example: 'Production DB connection string'.
     - tags: Comma-separated labels for grouping. Example: 'db,production'.
     - ttl_days: OMIT this parameter in most cases — default is 90 days and TTL resets on
       every read so popular facts never expire. Only set explicitly when needed:
       ttl_days=365 for long-lived facts, ttl_days=7 for temporary context.
       Do NOT pass ttl_days=0 unless the fact must be permanent (no expiry ever).
 
-    Examples: kv_set('openai-api-key', 'sk-...', tags='secrets,ai')
-              kv_set('user-language', 'Russian', ttl_days=365)
+    Examples: kv_set('openai-api-key', 'sk-...', label='OpenAI API key', tags='secrets,ai')
+              kv_set('user-language', 'Russian', label='User preferred language', ttl_days=365)
     """
     r = _redis()
     try:
         redis_key = f"{KV_PREFIX}{key}"
         safe_tags = ",".join(_sanitize_tag(t) for t in tags.split(",") if _sanitize_tag(t)) if tags else ""
-        await r.hset(redis_key, mapping={
+        mapping = {
             b"value":     value.encode(),
             b"tags":      safe_tags.encode(),
             b"timestamp": str(int(time.time())).encode(),
             b"ttl_days":  str(ttl_days).encode(),
-        })
+        }
+        if label: mapping[b"label"] = label.encode()
+        await r.hset(redis_key, mapping=mapping)
         if ttl_days > 0:
             await r.expire(redis_key, ttl_days * 86400)
     finally:
         await r.aclose()
 
     ttl_info = f"ttl={ttl_days}d (resets on read)" if ttl_days > 0 else "no expiry"
-    return f"Stored kv[{key}] = {value[:80]}" + (f"  tags=[{safe_tags}]" if safe_tags else "") + f"  {ttl_info}"
+    desc = f" ({label})" if label else ""
+    return f"Stored kv[{key}]{desc} = {value[:80]}" + (f"  tags=[{safe_tags}]" if safe_tags else "") + f"  {ttl_info}"
 
 
 @mcp.tool()
@@ -142,9 +147,11 @@ async def kv_get(key: str) -> str:
         await r.aclose()
 
     value = _decode(data.get(b"value", b""))
+    label = _decode(data.get(b"label", b""))
     tags  = _decode(data.get(b"tags",  b""))
     ts    = _fmt_ts(data.get(b"timestamp", b"0"))
-    result = f"kv[{key}] = {value}\nsaved: {ts}  ttl: {_fmt_ttl(ttl_left)} remaining"
+    desc = f" ({label})" if label else ""
+    result = f"kv[{key}]{desc} = {value}\nsaved: {ts}  ttl: {_fmt_ttl(ttl_left)} remaining"
     if tags:
         result += f"  tags=[{tags}]"
     return result
@@ -184,11 +191,13 @@ async def kv_list(tag: str = "", pattern: str = "") -> str:
             ttl_left = await r.ttl(k)
             name  = _decode(k).replace(KV_PREFIX, "")
             value = _decode(data.get(b"value", b""))
+            label = _decode(data.get(b"label", b""))
             tags_ = _decode(data.get(b"tags",  b""))
             ts    = _fmt_ts(data.get(b"timestamp", b"0"))
             if tag and tag not in tags_.split(","):
                 continue
-            line = f"[{ts} | ttl:{_fmt_ttl(ttl_left)}] {name} = {value[:60]}"
+            desc = f" ({label})" if label else ""
+            line = f"[{ts} | ttl:{_fmt_ttl(ttl_left)}] {name}{desc} = {value[:60]}"
             if tags_:
                 line += f"  [{tags_}]"
             results.append(line)
@@ -201,13 +210,15 @@ async def kv_list(tag: str = "", pattern: str = "") -> str:
 # ── Semantic Memory tools ─────────────────────────────────────────────────────
 
 @mcp.tool()
-async def mem_save(text: str, code: str = "", tags: str = "", ttl_days: int = 90) -> str:
+async def mem_save(text: str, label: str = "", code: str = "", tags: str = "", ttl_days: int = 90) -> str:
     """Save a fact to semantic memory with a vector embedding for similarity search.
     Use for knowledge that needs to be found by meaning: decisions, patterns, context, docs.
 
     Parameters:
-    - text (required): Human-readable description. Written as a complete sentence.
+    - text (required): Full human-readable description. Written as a complete sentence.
       Example: "We use JWT with 24h expiry. Refresh tokens stored in Redis with 30d TTL."
+    - label: Short human-readable description (shown in lists and search results).
+      Example: "JWT refresh token strategy". Keep under 60 chars.
     - code: Code snippet or structured data associated with this fact.
     - tags: Comma-separated labels for pre-filtering. Example: "auth,jwt,backend".
     - ttl_days: OMIT this parameter in most cases — default is 90 days and TTL resets on
@@ -232,16 +243,18 @@ async def mem_save(text: str, code: str = "", tags: str = "", ttl_days: int = 90
             b"ttl_days":  str(ttl_days).encode(),
         }
         safe_tags = ",".join(_sanitize_tag(t) for t in tags.split(",") if _sanitize_tag(t)) if tags else ""
-        if code: mapping[b"code"] = code.encode()
-        if safe_tags: mapping[b"tags"] = safe_tags.encode()
+        if label:     mapping[b"label"] = label.encode()
+        if code:      mapping[b"code"]  = code.encode()
+        if safe_tags: mapping[b"tags"]  = safe_tags.encode()
         await r.hset(redis_key, mapping=mapping)
         if ttl_days > 0:
             await r.expire(redis_key, ttl_days * 86400)
     finally:
         await r.aclose()
 
-    parts = [f"text='{text[:60]}'"]
-    if code: parts.append(f"code='{code[:30]}'")
+    display = f"'{label}'" if label else f"'{text[:60]}'"
+    parts = [f"label={display}"]
+    if code:      parts.append(f"code='{code[:30]}'")
     if safe_tags: parts.append(f"tags=[{safe_tags}]")
     ttl_info = f"ttl={ttl_days}d (resets on hit)" if ttl_days > 0 else "no expiry"
     return f"Saved mem[{mid[:8]}] {', '.join(parts)}  {ttl_info}"
@@ -274,7 +287,7 @@ async def mem_search(query: str, tags: str = "", top_k: int = 5) -> str:
         raw = await r.execute_command(
             "FT.SEARCH", INDEX, ft_query,
             "PARAMS", "2", "vec", vector_bytes,
-            "RETURN", "6", "text", "code", "tags", "timestamp", "score", "ttl_days",
+            "RETURN", "7", "label", "text", "code", "tags", "timestamp", "score", "ttl_days",
             "SORTBY", "score",
             "DIALECT", "2",
         )
@@ -300,7 +313,8 @@ async def mem_search(query: str, tags: str = "", top_k: int = 5) -> str:
 
             sim  = round((1 - float(fd.get("score", 1.0))) * 100, 1)
             dt   = _fmt_ts(fd.get("timestamp", 0))
-            head = f"[{sim}% | {dt} | ttl:{_fmt_ttl(ttl_left)}] ID:{mid}"
+            label = fd.get("label") or fd.get("text", "")[:60]
+            head = f"[{sim}% | {dt} | ttl:{_fmt_ttl(ttl_left)}] {label}  ID:{mid[:8]}"
             if fd.get("tags"): head += f"  tags=[{fd['tags']}]"
             body = fd.get("text", "")
             if fd.get("code"): body += f"\n```\n{fd['code']}\n```"
@@ -326,7 +340,7 @@ async def mem_list(limit: int = 20, tag: str = "") -> str:
             safe_tag = _sanitize_tag(tag)
             raw = await r.execute_command(
                 "FT.SEARCH", INDEX, f"@tags:{{{safe_tag}}}",
-                "RETURN", "4", "text", "tags", "timestamp", "ttl_days",
+                "RETURN", "5", "label", "text", "tags", "timestamp", "ttl_days",
                 "LIMIT", "0", str(limit),
                 "SORTBY", "timestamp", "DESC",
             )
@@ -339,7 +353,8 @@ async def mem_list(limit: int = 20, tag: str = "") -> str:
                 fd = {_decode(fields[j]): _decode(fields[j+1]) for j in range(0, len(fields), 2)}
                 ttl_left = await r.ttl(redis_key)
                 dt = _fmt_ts(fd.get("timestamp", 0))
-                line = f"[{dt} | ttl:{_fmt_ttl(ttl_left)}] ID:{mid[:8]}"
+                label = fd.get("label") or fd.get("text", "")[:60]
+                line = f"[{dt} | ttl:{_fmt_ttl(ttl_left)}] {label}  ID:{mid[:8]}"
                 if fd.get("tags"): line += f"  [{fd['tags']}]"
                 line += f"\n{fd.get('text','')[:100]}"
                 results.append(line)
@@ -351,11 +366,13 @@ async def mem_list(limit: int = 20, tag: str = "") -> str:
                 if b"vector" not in data:
                     continue
                 mid   = _decode(k).replace(MEM_PREFIX, "")
+                label_ = _decode(data.get(b"label", b""))
                 text  = _decode(data.get(b"text",  b""))
                 tags_ = _decode(data.get(b"tags",  b""))
                 ttl_left = await r.ttl(k)
                 dt    = _fmt_ts(data.get(b"timestamp", b"0"))
-                line  = f"[{dt} | ttl:{_fmt_ttl(ttl_left)}] ID:{mid[:8]}"
+                label = label_ or text[:60]
+                line  = f"[{dt} | ttl:{_fmt_ttl(ttl_left)}] {label}  ID:{mid[:8]}"
                 if tags_: line += f"  [{tags_}]"
                 line += f"\n{text[:100]}"
                 results.append(line)
