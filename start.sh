@@ -38,9 +38,13 @@ fi
 log "Using ref: $REF"
 
 RAW_URL="https://raw.githubusercontent.com/$REPO/$REF"
-# Docker tags allow only [A-Za-z0-9_.-]; a ref may contain '/' (branch names) or other
-# punctuation, so sanitize it for the image tag while RAW_URL keeps the real ref.
+# Docker tags must match [A-Za-z0-9_][A-Za-z0-9_.-]{0,127}: allowed chars only, a
+# leading alnum/underscore, and <=128 long. A ref may contain '/' (branch names),
+# other punctuation, or a leading '.'/'-', so sanitize for the tag while RAW_URL
+# keeps the real ref.
 IMAGE_TAG="$(printf '%s' "$REF" | tr -c 'A-Za-z0-9_.-' '-')"
+case "$IMAGE_TAG" in [!A-Za-z0-9_]*) IMAGE_TAG="ref-$IMAGE_TAG" ;; esac
+IMAGE_TAG="$(printf '%s' "$IMAGE_TAG" | cut -c1-128)"
 IMAGE="redis-memory-mcp:$IMAGE_TAG"
 COMPOSE_FILE="$WORK_DIR/docker-compose.yaml"
 SERVER_DIR="$WORK_DIR/server"
@@ -49,10 +53,10 @@ SERVER_DIR="$WORK_DIR/server"
 INSTALLED_REF="$(cat "$REF_FILE" 2>/dev/null || true)"
 if [ "$INSTALLED_REF" != "$REF" ] || [ ! -f "$COMPOSE_FILE" ] || [ ! -d "$SERVER_DIR" ]; then
   log "Downloading sources for $REF..."
-  curl -fsSL --connect-timeout 10 "$RAW_URL/docker-compose.yaml" -o "$COMPOSE_FILE"
+  curl -fsSL --connect-timeout 10 --max-time 60 "$RAW_URL/docker-compose.yaml" -o "$COMPOSE_FILE"
   mkdir -p "$SERVER_DIR"
   for f in memory_mcp.py Dockerfile pyproject.toml; do
-    curl -fsSL --connect-timeout 10 "$RAW_URL/server/$f" -o "$SERVER_DIR/$f"
+    curl -fsSL --connect-timeout 10 --max-time 60 "$RAW_URL/server/$f" -o "$SERVER_DIR/$f"
   done
   echo "$REF" > "$REF_FILE"
 fi
