@@ -4,10 +4,6 @@
 set -e
 
 REPO="sergesha/redis-memory-mcp"
-# Which version to install:
-#   - REDIS_MEMORY_MCP_REF set        → use it verbatim (e.g. v0.2.0, or "main" to track dev)
-#   - unset                           → latest published release tag (via GitHub API)
-#   - API unavailable / offline       → FALLBACK_REF
 REF="${REDIS_MEMORY_MCP_REF:-}"
 WORK_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/redis-memory-mcp"
 REF_FILE="$WORK_DIR/.installed-ref"
@@ -17,7 +13,8 @@ log() { echo "🧠 redis-memory-mcp: $*" >&2; }
 
 latest_release() {
   # Latest published release tag from GitHub; empty on any failure (network, rate limit, no release).
-  curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" 2>/dev/null \
+  # Bounded timeouts so an offline/slow host fails fast into the fallback chain instead of hanging.
+  curl -fsSL --connect-timeout 5 --max-time 10 "https://api.github.com/repos/$REPO/releases/latest" 2>/dev/null \
     | grep -m1 '"tag_name"' \
     | sed -E 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/'
 }
@@ -41,7 +38,10 @@ fi
 log "Using ref: $REF"
 
 RAW_URL="https://raw.githubusercontent.com/$REPO/$REF"
-IMAGE="redis-memory-mcp:$REF"
+# Docker tags allow only [A-Za-z0-9_.-]; a ref may contain '/' (branch names) or other
+# punctuation, so sanitize it for the image tag while RAW_URL keeps the real ref.
+IMAGE_TAG="$(printf '%s' "$REF" | tr -c 'A-Za-z0-9_.-' '-')"
+IMAGE="redis-memory-mcp:$IMAGE_TAG"
 COMPOSE_FILE="$WORK_DIR/docker-compose.yaml"
 SERVER_DIR="$WORK_DIR/server"
 
@@ -49,10 +49,10 @@ SERVER_DIR="$WORK_DIR/server"
 INSTALLED_REF="$(cat "$REF_FILE" 2>/dev/null || true)"
 if [ "$INSTALLED_REF" != "$REF" ] || [ ! -f "$COMPOSE_FILE" ] || [ ! -d "$SERVER_DIR" ]; then
   log "Downloading sources for $REF..."
-  curl -fsSL "$RAW_URL/docker-compose.yaml" -o "$COMPOSE_FILE"
+  curl -fsSL --connect-timeout 10 "$RAW_URL/docker-compose.yaml" -o "$COMPOSE_FILE"
   mkdir -p "$SERVER_DIR"
   for f in memory_mcp.py Dockerfile pyproject.toml; do
-    curl -fsSL "$RAW_URL/server/$f" -o "$SERVER_DIR/$f"
+    curl -fsSL --connect-timeout 10 "$RAW_URL/server/$f" -o "$SERVER_DIR/$f"
   done
   echo "$REF" > "$REF_FILE"
 fi
