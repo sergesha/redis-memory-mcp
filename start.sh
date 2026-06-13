@@ -38,10 +38,10 @@ fi
 log "Using ref: $REF"
 
 RAW_URL="https://raw.githubusercontent.com/$REPO/$REF"
-# Docker tags must match [A-Za-z0-9_][A-Za-z0-9_.-]{0,127}: allowed chars only, a
-# leading alnum/underscore, and <=128 long. A ref may contain '/' (branch names),
-# other punctuation, or a leading '.'/'-', so sanitize for the tag while RAW_URL
-# keeps the real ref.
+# Docker tags must match [A-Za-z0-9_][A-Za-z0-9_.-]{0,127}: allowed chars only,
+# a leading alnum/underscore, and <=128 chars. A ref may contain '/' (branch
+# names), other punctuation, or a leading '.'/'-', so sanitize for the tag while
+# RAW_URL keeps the real ref.
 IMAGE_TAG="$(printf '%s' "$REF" | tr -c 'A-Za-z0-9_.-' '-')"
 case "$IMAGE_TAG" in [!A-Za-z0-9_]*) IMAGE_TAG="ref-$IMAGE_TAG" ;; esac
 IMAGE_TAG="$(printf '%s' "$IMAGE_TAG" | cut -c1-128)"
