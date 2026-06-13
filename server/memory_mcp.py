@@ -79,6 +79,38 @@ def _sanitize_tag(tag: str) -> str:
     cleaned = re.sub(r"[^a-zA-Z0-9_\-]", "", tag.strip())
     return cleaned
 
+def _escape_tag(tag: str) -> str:
+    """Backslash-escape RediSearch TAG special chars (e.g. hyphen) for @tags:{...} queries.
+    Sanitized tags only ever contain [A-Za-z0-9_-], so in practice this escapes '-'."""
+    return re.sub(r"([^a-zA-Z0-9_])", r"\\\1", tag)
+
+def _parse_search_results(raw):
+    """Normalize an FT.SEARCH reply across redis-py response formats.
+
+    Returns (total, [(redis_key, {field: value}), ...]).
+    Handles both the RESP3 map reply (redis-py 5+/RESP3: dict with 'results') and
+    the legacy RESP2 flat list ([count, key, [f, v, ...], ...])."""
+    if isinstance(raw, dict):
+        total = raw.get(b"total_results", raw.get("total_results", 0)) or 0
+        docs = raw.get(b"results", raw.get("results", [])) or []
+        out = []
+        for doc in docs:
+            rid = doc.get(b"id", doc.get("id"))
+            attrs = doc.get(b"extra_attributes", doc.get("extra_attributes", {})) or {}
+            fd = {_decode(k): _decode(v) for k, v in attrs.items()}
+            out.append((_decode(rid), fd))
+        return int(total), out
+    # Legacy RESP2 flat list
+    total = raw[0] if raw else 0
+    out = []
+    items = raw[1:]
+    for i in range(0, len(items), 2):
+        redis_key = _decode(items[i])
+        fields = items[i + 1]
+        fd = {_decode(fields[j]): _decode(fields[j + 1]) for j in range(0, len(fields), 2)}
+        out.append((redis_key, fd))
+    return int(total), out
+
 
 # ── KV tools ──────────────────────────────────────────────────────────────────
 
@@ -276,7 +308,7 @@ async def mem_search(query: str, tags: str = "", top_k: int = 5) -> str:
     vector_bytes = _encode(await _embed(query))
 
     if tags:
-        tag_filter = "|".join(_sanitize_tag(t) for t in tags.split(",") if _sanitize_tag(t))
+        tag_filter = "|".join(_escape_tag(_sanitize_tag(t)) for t in tags.split(",") if _sanitize_tag(t))
         ft_query = f"(@tags:{{{tag_filter}}})=>[KNN {top_k} @vector $vec AS score]"
     else:
         ft_query = f"*=>[KNN {top_k} @vector $vec AS score]"
@@ -292,18 +324,13 @@ async def mem_search(query: str, tags: str = "", top_k: int = 5) -> str:
             "DIALECT", "2",
         )
 
-        if raw[0] == 0:
+        total, docs = _parse_search_results(raw)
+        if total == 0 or not docs:
             return "No memories found."
 
         results = []
-        items = raw[1:]
-        for i in range(0, len(items), 2):
-            redis_key = _decode(items[i])
+        for redis_key, fd in docs:
             mid = redis_key.replace(MEM_PREFIX, "")
-            fields = items[i + 1]
-            fd = {}
-            for j in range(0, len(fields), 2):
-                fd[_decode(fields[j])] = _decode(fields[j + 1])
 
             # Refresh TTL on hit
             ttl_days = int(fd.get("ttl_days", "90") or 90)
@@ -337,7 +364,7 @@ async def mem_list(limit: int = 20, tag: str = "") -> str:
     try:
         await _ensure_index(r)
         if tag:
-            safe_tag = _sanitize_tag(tag)
+            safe_tag = _escape_tag(_sanitize_tag(tag))
             raw = await r.execute_command(
                 "FT.SEARCH", INDEX, f"@tags:{{{safe_tag}}}",
                 "RETURN", "5", "label", "text", "tags", "timestamp", "ttl_days",
@@ -345,12 +372,9 @@ async def mem_list(limit: int = 20, tag: str = "") -> str:
                 "SORTBY", "timestamp", "DESC",
             )
             results = []
-            items = raw[1:]
-            for i in range(0, len(items), 2):
-                redis_key = _decode(items[i])
+            _, docs = _parse_search_results(raw)
+            for redis_key, fd in docs:
                 mid = redis_key.replace(MEM_PREFIX, "")
-                fields = items[i + 1]
-                fd = {_decode(fields[j]): _decode(fields[j+1]) for j in range(0, len(fields), 2)}
                 ttl_left = await r.ttl(redis_key)
                 dt = _fmt_ts(fd.get("timestamp", 0))
                 label = fd.get("label") or fd.get("text", "")[:60]
