@@ -79,7 +79,11 @@ fi
 log "Ready ($REF)."
 
 # ── 5. Launch MCP server — only this writes to stdout ─────────────────────────
+# --add-host maps host.docker.internal to the host gateway. On Docker Desktop
+# (macOS/Windows) it already resolves; on Linux Docker Engine it does not unless
+# mapped explicitly, so the server couldn't reach Redis/TEI on the host there.
 exec docker run --rm -i \
+  --add-host=host.docker.internal:host-gateway \
   -e "REDIS_URL=${REDIS_URL:-redis://host.docker.internal:6379/0}" \
   -e "EMBED_URL=${EMBED_URL:-http://host.docker.internal:8081}" \
   -e "INDEX_NAME=${INDEX_NAME:-idx:memories}" \
