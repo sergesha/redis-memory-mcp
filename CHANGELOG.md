@@ -5,6 +5,13 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1](https://github.com/sergesha/redis-memory-mcp/compare/v0.2.0...v0.2.1) (2026-06-15)
+
+
+### Bug Fixes
+
+* **start:** map host.docker.internal for Linux Docker Engine ([ce86d0b](https://github.com/sergesha/redis-memory-mcp/commit/ce86d0b513b3ac25d5766cd6be5ea28df0d48dc6))
+
 ## [0.2.0](https://github.com/sergesha/redis-memory-mcp/compare/v0.1.1...v0.2.0) (2026-06-13)
 
 
