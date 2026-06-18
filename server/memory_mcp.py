@@ -289,7 +289,7 @@ async def mem_save(text: str, label: str = "", code: str = "", tags: str = "", t
     if code:      parts.append(f"code='{code[:30]}'")
     if safe_tags: parts.append(f"tags=[{safe_tags}]")
     ttl_info = f"ttl={ttl_days}d (resets on hit)" if ttl_days > 0 else "no expiry"
-    return f"Saved mem[{mid[:8]}] {', '.join(parts)}  {ttl_info}"
+    return f"Saved mem[{mid}] {', '.join(parts)}  {ttl_info}"
 
 
 @mcp.tool()
@@ -341,7 +341,7 @@ async def mem_search(query: str, tags: str = "", top_k: int = 5) -> str:
             sim  = round((1 - float(fd.get("score", 1.0))) * 100, 1)
             dt   = _fmt_ts(fd.get("timestamp", 0))
             label = fd.get("label") or fd.get("text", "")[:60]
-            head = f"[{sim}% | {dt} | ttl:{_fmt_ttl(ttl_left)}] {label}  ID:{mid[:8]}"
+            head = f"[{sim}% | {dt} | ttl:{_fmt_ttl(ttl_left)}] {label}  ID:{mid}"
             if fd.get("tags"): head += f"  tags=[{fd['tags']}]"
             body = fd.get("text", "")
             if fd.get("code"): body += f"\n```\n{fd['code']}\n```"
@@ -378,7 +378,7 @@ async def mem_list(limit: int = 20, tag: str = "") -> str:
                 ttl_left = await r.ttl(redis_key)
                 dt = _fmt_ts(fd.get("timestamp", 0))
                 label = fd.get("label") or fd.get("text", "")[:60]
-                line = f"[{dt} | ttl:{_fmt_ttl(ttl_left)}] {label}  ID:{mid[:8]}"
+                line = f"[{dt} | ttl:{_fmt_ttl(ttl_left)}] {label}  ID:{mid}"
                 if fd.get("tags"): line += f"  [{fd['tags']}]"
                 line += f"\n{fd.get('text','')[:100]}"
                 results.append(line)
@@ -396,7 +396,7 @@ async def mem_list(limit: int = 20, tag: str = "") -> str:
                 ttl_left = await r.ttl(k)
                 dt    = _fmt_ts(data.get(b"timestamp", b"0"))
                 label = label_ or text[:60]
-                line  = f"[{dt} | ttl:{_fmt_ttl(ttl_left)}] {label}  ID:{mid[:8]}"
+                line  = f"[{dt} | ttl:{_fmt_ttl(ttl_left)}] {label}  ID:{mid}"
                 if tags_: line += f"  [{tags_}]"
                 line += f"\n{text[:100]}"
                 results.append(line)
@@ -411,14 +411,32 @@ async def mem_delete(memory_id: str) -> str:
     """Permanently delete a semantic memory by its ID.
 
     Parameters:
-    - memory_id (required): The full UUID from mem_save or mem_search results.
+    - memory_id (required): Full UUID or short prefix from mem_save / mem_search / mem_list output.
     """
+    memory_id = memory_id.strip()
+    is_full_uuid = "-" in memory_id and len(memory_id) == 36
+
     r = _redis()
     try:
-        deleted = await r.delete(f"{MEM_PREFIX}{memory_id}")
+        if is_full_uuid:
+            deleted = await r.delete(f"{MEM_PREFIX}{memory_id}")
+            if deleted:
+                return f"Deleted mem[{memory_id}]"
+            return f"Not found: '{memory_id}'"
+
+        # Short / prefix ID — scan for matching keys
+        pattern = f"{MEM_PREFIX}{memory_id}*"
+        matches = [k async for k in r.scan_iter(pattern, count=200)]
+        if len(matches) == 0:
+            return f"Not found: '{memory_id}'"
+        if len(matches) > 1:
+            ids = ", ".join(_decode(k).replace(MEM_PREFIX, "") for k in matches[:5])
+            return f"Ambiguous ID '{memory_id}', multiple matches: {ids}. Use full UUID."
+        deleted = await r.delete(matches[0])
+        full_id = _decode(matches[0]).replace(MEM_PREFIX, "")
+        return f"Deleted mem[{full_id}]" if deleted else f"Not found: '{memory_id}'"
     finally:
         await r.aclose()
-    return f"Deleted mem[{memory_id}]" if deleted else f"Not found: '{memory_id}'"
 
 
 # ── Unified search ────────────────────────────────────────────────────────────
