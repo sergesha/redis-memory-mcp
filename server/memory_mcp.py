@@ -422,7 +422,7 @@ async def mem_delete(memory_id: str) -> str:
     is_full_uuid = bool(_UUID_RE.match(memory_id))
 
     if not is_full_uuid and not _HEX_PREFIX_RE.match(memory_id):
-        return "Invalid memory ID: expected full UUID or hex prefix (no dashes)."
+        return "Invalid memory ID: expected full UUID (with dashes) or hex-only prefix."
 
     r = _redis()
     try:
@@ -438,9 +438,9 @@ async def mem_delete(memory_id: str) -> str:
         for _ in range(_MAX_SCAN_ROUNDS):
             cursor, keys = await r.scan(cursor, match=pattern, count=200)
             for k in keys:
-                matches.append(k)
-                if len(matches) > _MAX_PREFIX_MATCHES:
+                if len(matches) >= _MAX_PREFIX_MATCHES:
                     return f"Too many matches for prefix '{memory_id}'. Use full UUID."
+                matches.append(k)
             if cursor == 0:
                 break
         else:
