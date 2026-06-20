@@ -26,7 +26,7 @@ TOP_K        = int(os.getenv("TOP_K",   "5"))
 DEFAULT_TTL  = int(os.getenv("DEFAULT_TTL", str(90 * 24 * 3600)))  # 90 days
 
 _UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
-_HEX_PREFIX_RE = re.compile(r"^[0-9a-f]{1,32}$")
+_HEX_PREFIX_RE = re.compile(r"^[0-9a-f]{1,8}$")
 _MAX_PREFIX_MATCHES = 10
 _MAX_SCAN_ROUNDS = 3
 
@@ -422,7 +422,7 @@ async def mem_delete(memory_id: str) -> str:
     is_full_uuid = bool(_UUID_RE.match(memory_id))
 
     if not is_full_uuid and not _HEX_PREFIX_RE.match(memory_id):
-        return "Invalid memory ID: expected full UUID (with dashes) or hex-only prefix."
+        return "Invalid memory ID: expected full UUID or short hex prefix (1-8 chars)."
 
     r = _redis()
     try:
