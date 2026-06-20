@@ -416,7 +416,7 @@ async def mem_delete(memory_id: str) -> str:
     _UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
     _HEX_PREFIX_RE = re.compile(r"^[0-9a-f]{1,32}$")
     _MAX_PREFIX_MATCHES = 10
-    _MAX_SCAN_ITERATIONS = 500
+    _MAX_SCAN_ROUNDS = 3
 
     memory_id = memory_id.strip().lower()
     is_full_uuid = bool(_UUID_RE.match(memory_id))
@@ -434,12 +434,17 @@ async def mem_delete(memory_id: str) -> str:
 
         pattern = f"{MEM_PREFIX}{memory_id}*"
         matches: list[bytes] = []
-        iterations = 0
-        async for k in r.scan_iter(pattern, count=200):
-            matches.append(k)
-            iterations += 1
-            if len(matches) > _MAX_PREFIX_MATCHES or iterations > _MAX_SCAN_ITERATIONS:
-                return f"Too many matches for prefix '{memory_id}'. Use full UUID."
+        cursor = 0
+        for _ in range(_MAX_SCAN_ROUNDS):
+            cursor, keys = await r.scan(cursor, match=pattern, count=200)
+            for k in keys:
+                matches.append(k)
+                if len(matches) > _MAX_PREFIX_MATCHES:
+                    return f"Too many matches for prefix '{memory_id}'. Use full UUID."
+            if cursor == 0:
+                break
+        else:
+            return f"Prefix '{memory_id}' too broad — scanned too many keys. Use full UUID."
         if len(matches) == 0:
             return f"Not found: '{memory_id}'"
         if len(matches) > 1:
