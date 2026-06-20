@@ -414,6 +414,8 @@ async def mem_delete(memory_id: str) -> str:
     - memory_id (required): Full UUID or short prefix from mem_save / mem_search / mem_list output.
     """
     memory_id = memory_id.strip()
+    if not re.fullmatch(r"[0-9a-fA-F\-]+", memory_id):
+        return "Invalid memory ID: expected UUID or hex prefix."
     is_full_uuid = "-" in memory_id and len(memory_id) == 36
 
     r = _redis()
@@ -424,9 +426,14 @@ async def mem_delete(memory_id: str) -> str:
                 return f"Deleted mem[{memory_id}]"
             return f"Not found: '{memory_id}'"
 
-        # Short / prefix ID — scan for matching keys
+        # Short / prefix ID — scan for matching keys (capped to avoid broad scans)
+        _MAX_PREFIX_MATCHES = 10
         pattern = f"{MEM_PREFIX}{memory_id}*"
-        matches = [k async for k in r.scan_iter(pattern, count=200)]
+        matches: list[bytes] = []
+        async for k in r.scan_iter(pattern, count=200):
+            matches.append(k)
+            if len(matches) > _MAX_PREFIX_MATCHES:
+                return f"Too many matches for prefix '{memory_id}'. Use full UUID."
         if len(matches) == 0:
             return f"Not found: '{memory_id}'"
         if len(matches) > 1:
