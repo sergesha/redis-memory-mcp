@@ -25,6 +25,11 @@ KV_PREFIX    = "kv:"
 TOP_K        = int(os.getenv("TOP_K",   "5"))
 DEFAULT_TTL  = int(os.getenv("DEFAULT_TTL", str(90 * 24 * 3600)))  # 90 days
 
+_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+_HEX_PREFIX_RE = re.compile(r"^[0-9a-f]{1,32}$")
+_MAX_PREFIX_MATCHES = 10
+_MAX_SCAN_ROUNDS = 3
+
 mcp = FastMCP("Redis Memory")
 
 
@@ -413,11 +418,6 @@ async def mem_delete(memory_id: str) -> str:
     Parameters:
     - memory_id (required): Full UUID or short prefix from mem_save / mem_search / mem_list output.
     """
-    _UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
-    _HEX_PREFIX_RE = re.compile(r"^[0-9a-f]{1,32}$")
-    _MAX_PREFIX_MATCHES = 10
-    _MAX_SCAN_ROUNDS = 3
-
     memory_id = memory_id.strip().lower()
     is_full_uuid = bool(_UUID_RE.match(memory_id))
 
@@ -444,7 +444,7 @@ async def mem_delete(memory_id: str) -> str:
             if cursor == 0:
                 break
         else:
-            return f"Prefix '{memory_id}' too broad — scanned too many keys. Use full UUID."
+            return f"Scan round limit reached for prefix '{memory_id}'. Use full UUID."
         if len(matches) == 0:
             return f"Not found: '{memory_id}'"
         if len(matches) > 1:
