@@ -25,6 +25,11 @@ KV_PREFIX    = "kv:"
 TOP_K        = int(os.getenv("TOP_K",   "5"))
 DEFAULT_TTL  = int(os.getenv("DEFAULT_TTL", str(90 * 24 * 3600)))  # 90 days
 
+_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+_HEX_PREFIX_RE = re.compile(r"^[0-9a-f]{1,8}$")
+_MAX_PREFIX_MATCHES = 10
+_MAX_SCAN_ROUNDS = 3
+
 mcp = FastMCP("Redis Memory")
 
 
@@ -413,8 +418,11 @@ async def mem_delete(memory_id: str) -> str:
     Parameters:
     - memory_id (required): Full UUID or short prefix from mem_save / mem_search / mem_list output.
     """
-    memory_id = memory_id.strip()
-    is_full_uuid = "-" in memory_id and len(memory_id) == 36
+    memory_id = memory_id.strip().lower()
+    is_full_uuid = bool(_UUID_RE.match(memory_id))
+
+    if not is_full_uuid and not _HEX_PREFIX_RE.match(memory_id):
+        return "Invalid memory ID: expected full UUID or short hex prefix (1-8 chars)."
 
     r = _redis()
     try:
@@ -424,9 +432,19 @@ async def mem_delete(memory_id: str) -> str:
                 return f"Deleted mem[{memory_id}]"
             return f"Not found: '{memory_id}'"
 
-        # Short / prefix ID — scan for matching keys
         pattern = f"{MEM_PREFIX}{memory_id}*"
-        matches = [k async for k in r.scan_iter(pattern, count=200)]
+        matches: list[bytes] = []
+        cursor = 0
+        for _ in range(_MAX_SCAN_ROUNDS):
+            cursor, keys = await r.scan(cursor, match=pattern, count=200)
+            for k in keys:
+                if len(matches) >= _MAX_PREFIX_MATCHES:
+                    return f"Too many matches for prefix '{memory_id}'. Use full UUID."
+                matches.append(k)
+            if cursor == 0:
+                break
+        else:
+            return f"Scan round limit reached for prefix '{memory_id}'. Use full UUID."
         if len(matches) == 0:
             return f"Not found: '{memory_id}'"
         if len(matches) > 1:
