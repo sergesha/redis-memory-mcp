@@ -37,6 +37,26 @@ if [ -z "$REF" ]; then
 fi
 log "Using ref: $REF"
 
+# MODE selects whether this invocation owns its own Redis+TEI backend
+# (dedicated, default — current behavior) or connects to one already running
+# elsewhere (shared — e.g. one backend started once by a "fleet" user, reused
+# by every other agent/user on the same host via REDIS_URL/EMBED_URL pointed
+# at it). shared refuses to guess a backend: REDIS_URL and EMBED_URL must
+# both be set explicitly, or this exits rather than silently start a second,
+# unshared local instance.
+MODE="${REDIS_MEMORY_MCP_MODE:-dedicated}"
+case "$MODE" in
+  dedicated|shared) ;;
+  *)
+    log "Invalid REDIS_MEMORY_MCP_MODE '$MODE' (expected 'dedicated' or 'shared')."
+    exit 1
+    ;;
+esac
+if [ "$MODE" = "shared" ] && { [ -z "${REDIS_URL:-}" ] || [ -z "${EMBED_URL:-}" ]; }; then
+  log "REDIS_MEMORY_MCP_MODE=shared requires REDIS_URL and EMBED_URL to point at the shared backend."
+  exit 1
+fi
+
 RAW_URL="https://raw.githubusercontent.com/$REPO/$REF"
 # Docker tags must match [A-Za-z0-9_][A-Za-z0-9_.-]{0,127}: allowed chars only,
 # a leading alnum/underscore, and <=128 chars. A ref may contain '/' (branch
@@ -61,13 +81,18 @@ if [ "$INSTALLED_REF" != "$REF" ] || [ ! -f "$COMPOSE_FILE" ] || [ ! -d "$SERVER
   echo "$REF" > "$REF_FILE"
 fi
 
-# ── 2. Start Redis + TEI (idempotent) ─────────────────────────────────────────
-log "Starting infrastructure..."
-docker compose -f "$COMPOSE_FILE" up -d redis embeddings redis-init >/dev/null 2>&1
+# ── 2-3. Start Redis + TEI and wait for Redis — dedicated mode only ───────────
+# In shared mode, the backend is owned and started elsewhere; connecting to
+# someone else's REDIS_URL/EMBED_URL is all this invocation should do.
+if [ "$MODE" = "dedicated" ]; then
+  log "Starting infrastructure..."
+  docker compose -f "$COMPOSE_FILE" up -d redis embeddings redis-init >/dev/null 2>&1
 
-# ── 3. Wait for Redis ─────────────────────────────────────────────────────────
-log "Waiting for Redis..."
-until docker exec redis-stack redis-cli ping >/dev/null 2>&1; do sleep 1; done
+  log "Waiting for Redis..."
+  until docker exec redis-stack redis-cli ping >/dev/null 2>&1; do sleep 1; done
+else
+  log "MODE=shared: skipping local infra bring-up, connecting to REDIS_URL/EMBED_URL from environment."
+fi
 
 # ── 4. Build the version-tagged MCP server image if not present ───────────────
 # Tagging the image per ref means switching REF rebuilds instead of reusing stale layers.
@@ -87,4 +112,5 @@ exec docker run --rm -i \
   -e "REDIS_URL=${REDIS_URL:-redis://host.docker.internal:6379/0}" \
   -e "EMBED_URL=${EMBED_URL:-http://host.docker.internal:8081}" \
   -e "INDEX_NAME=${INDEX_NAME:-idx:memories}" \
+  -e "NAMESPACE=${NAMESPACE:-}" \
   "$IMAGE"

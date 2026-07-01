@@ -19,11 +19,19 @@ from mcp.server.fastmcp import FastMCP
 
 REDIS_URL    = os.getenv("REDIS_URL",    "redis://localhost:6379/0")
 EMBED_URL    = os.getenv("EMBED_URL",    "http://localhost:8081")
-INDEX        = os.getenv("INDEX_NAME",   "idx:memories")
-MEM_PREFIX   = "mem:"
-KV_PREFIX    = "kv:"
 TOP_K        = int(os.getenv("TOP_K",   "5"))
 DEFAULT_TTL  = int(os.getenv("DEFAULT_TTL", str(90 * 24 * 3600)))  # 90 days
+
+# NAMESPACE isolates data on a shared Redis instance — e.g. several agents
+# pointed at the same REDIS_URL/EMBED_URL (one Redis Stack + one TEI service)
+# but each with its own NAMESPACE never see or overwrite each other's keys,
+# regardless of whether they pass `tags`. Tags remain a same-namespace
+# filter; NAMESPACE is the isolation boundary. Unset = previous global
+# behavior (single shared "mem:"/"kv:" keyspace, "idx:memories" index).
+NAMESPACE    = re.sub(r"[^a-zA-Z0-9_-]", "", os.getenv("NAMESPACE", "").strip())
+MEM_PREFIX   = f"mem:{NAMESPACE}:" if NAMESPACE else "mem:"
+KV_PREFIX    = f"kv:{NAMESPACE}:"  if NAMESPACE else "kv:"
+INDEX        = os.getenv("INDEX_NAME", f"idx:memories:{NAMESPACE}" if NAMESPACE else "idx:memories")
 
 _UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 _HEX_PREFIX_RE = re.compile(r"^[0-9a-f]{1,8}$")
