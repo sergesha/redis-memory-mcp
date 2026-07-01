@@ -29,9 +29,40 @@ DEFAULT_TTL  = int(os.getenv("DEFAULT_TTL", str(90 * 24 * 3600)))  # 90 days
 # filter; NAMESPACE is the isolation boundary. Unset = previous global
 # behavior (single shared "mem:"/"kv:" keyspace, "idx:memories" index).
 NAMESPACE    = re.sub(r"[^a-zA-Z0-9_-]", "", os.getenv("NAMESPACE", "").strip())
-MEM_PREFIX   = f"mem:{NAMESPACE}:" if NAMESPACE else "mem:"
-KV_PREFIX    = f"kv:{NAMESPACE}:"  if NAMESPACE else "kv:"
-INDEX        = os.getenv("INDEX_NAME", f"idx:memories:{NAMESPACE}" if NAMESPACE else "idx:memories")
+_BASE_INDEX  = os.getenv("INDEX_NAME", "idx:memories")
+_BASE_MEM, _BASE_KV = "mem:", "kv:"
+# Namespaced keys use "ns:{NAMESPACE}:mem:"/"...:kv:", NOT "mem:{NAMESPACE}:" —
+# deliberately not a string extension of _BASE_MEM/_BASE_KV. RediSearch's
+# FT.CREATE PREFIX match is a plain string-prefix test with no separator
+# awareness: "mem:agentA:x" *does* start with "mem:", so an index created
+# with PREFIX "mem:" would also pick up every namespace's keys once both the
+# base and a namespaced index exist side by side (confirmed live — the base
+# scope's mem_search returned another namespace's private entries). Prefixing
+# with "ns:{NAMESPACE}:" instead makes the two prefix sets disjoint in both
+# directions, so a key can only ever match one index.
+_OWN_MEM = f"ns:{NAMESPACE}:mem:" if NAMESPACE else _BASE_MEM
+_OWN_KV  = f"ns:{NAMESPACE}:kv:"  if NAMESPACE else _BASE_KV
+_OWN_INDEX = f"{_BASE_INDEX}:{NAMESPACE}" if NAMESPACE else _BASE_INDEX
+
+def _scope(shared: bool) -> tuple[str, str, str]:
+    """Resolve (mem_prefix, kv_prefix, index) for one call.
+
+    Every kv_*/mem_* tool takes `shared: bool = False` and calls this to pick
+    which of two always-available areas that one call reads/writes:
+      shared=False (default) → NAMESPACE's own area (or the base area if
+        NAMESPACE is unset — same thing, so this is a no-op when there's no
+        namespace to isolate from).
+      shared=True  → the base ("mem:"/"kv:"/idx:memories) area, always,
+        regardless of NAMESPACE.
+    This is a per-call choice, not a per-server-instance one: one MCP client
+    with NAMESPACE=myproject can still reach the fleet-wide shared area by
+    passing shared=True on any individual call, without a second client/
+    registration. There is no cross-scope fallback — a call touches exactly
+    one area; the caller decides which by setting `shared`.
+    """
+    if shared or not NAMESPACE:
+        return _BASE_MEM, _BASE_KV, _BASE_INDEX
+    return _OWN_MEM, _OWN_KV, _OWN_INDEX
 
 _UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 _HEX_PREFIX_RE = re.compile(r"^[0-9a-f]{1,8}$")
@@ -55,12 +86,12 @@ async def _embed(text: str) -> list[float]:
 def _redis():
     return aio_redis.from_url(REDIS_URL, decode_responses=False)
 
-async def _ensure_index(r):
+async def _ensure_index(r, index: str, mem_prefix: str):
     try:
-        await r.execute_command("FT.INFO", INDEX)
+        await r.execute_command("FT.INFO", index)
     except Exception:
         await r.execute_command(
-            "FT.CREATE", INDEX, "ON", "HASH", "PREFIX", "1", MEM_PREFIX, "SCHEMA",
+            "FT.CREATE", index, "ON", "HASH", "PREFIX", "1", mem_prefix, "SCHEMA",
             "text",      "TEXT",
             "label",     "TEXT",
             "code",      "TEXT",
@@ -128,7 +159,7 @@ def _parse_search_results(raw):
 # ── KV tools ──────────────────────────────────────────────────────────────────
 
 @mcp.tool()
-async def kv_set(key: str, value: str, label: str = "", tags: str = "", ttl_days: int = 90) -> str:
+async def kv_set(key: str, value: str, label: str = "", tags: str = "", ttl_days: int = 90, shared: bool = False) -> str:
     """Store a key/value fact — instant lookup, no embeddings.
     Use for discrete facts with a known name: credentials, config, settings, names.
 
@@ -142,13 +173,17 @@ async def kv_set(key: str, value: str, label: str = "", tags: str = "", ttl_days
       every read so popular facts never expire. Only set explicitly when needed:
       ttl_days=365 for long-lived facts, ttl_days=7 for temporary context.
       Do NOT pass ttl_days=0 unless the fact must be permanent (no expiry ever).
+    - shared: OMIT unless this server is running with NAMESPACE set AND the fact
+      should be visible to every other agent/namespace on this instance, not just
+      this one. Default (false) stores in this server's own area.
 
     Examples: kv_set('openai-api-key', 'sk-...', label='OpenAI API key', tags='secrets,ai')
               kv_set('user-language', 'Russian', label='User preferred language', ttl_days=365)
     """
+    _, kv_prefix, _ = _scope(shared)
     r = _redis()
     try:
-        redis_key = f"{KV_PREFIX}{key}"
+        redis_key = f"{kv_prefix}{key}"
         safe_tags = ",".join(_sanitize_tag(t) for t in tags.split(",") if _sanitize_tag(t)) if tags else ""
         mapping = {
             b"value":     value.encode(),
@@ -169,17 +204,22 @@ async def kv_set(key: str, value: str, label: str = "", tags: str = "", ttl_days
 
 
 @mcp.tool()
-async def kv_get(key: str) -> str:
+async def kv_get(key: str, shared: bool = False) -> str:
     """Retrieve a value by its exact key — O(1), instant, always consistent.
     Automatically refreshes the TTL on read, so frequently accessed facts never expire.
 
     Parameters:
     - key (required): The exact key used when calling kv_set.
       Example: kv_get('prod-db-url') → 'postgresql://...'
+    - shared: Must match how the entry was saved — pass the same `shared` value
+      used in the kv_set call, or this looks in the wrong area and reports
+      "Not found" even though the key exists elsewhere. There is no automatic
+      fallback between areas.
     """
+    _, kv_prefix, _ = _scope(shared)
     r = _redis()
     try:
-        redis_key = f"{KV_PREFIX}{key}"
+        redis_key = f"{kv_prefix}{key}"
         data = await r.hgetall(redis_key)
         if not data:
             return f"Not found: '{key}'"
@@ -203,38 +243,44 @@ async def kv_get(key: str) -> str:
 
 
 @mcp.tool()
-async def kv_delete(key: str) -> str:
+async def kv_delete(key: str, shared: bool = False) -> str:
     """Delete a key/value entry by its exact key.
 
     Parameters:
     - key (required): The exact key to delete. Cannot be undone.
+    - shared: Must match how the entry was saved (see kv_get) — deletes from
+      that area only.
     """
+    _, kv_prefix, _ = _scope(shared)
     r = _redis()
     try:
-        deleted = await r.delete(f"{KV_PREFIX}{key}")
+        deleted = await r.delete(f"{kv_prefix}{key}")
     finally:
         await r.aclose()
     return f"Deleted kv[{key}]" if deleted else f"Not found: '{key}'"
 
 
 @mcp.tool()
-async def kv_list(tag: str = "", pattern: str = "") -> str:
+async def kv_list(tag: str = "", pattern: str = "", shared: bool = False) -> str:
     """List stored key/value entries with their TTL.
 
     Parameters:
     - tag: Filter by tag (e.g. tag='secrets').
     - pattern: Glob pattern for key names (e.g. pattern='prod-*').
+    - shared: List this server's own area (default) or the always-available
+      shared area (shared=True). Lists one area at a time, never both.
     """
+    _, kv_prefix, _ = _scope(shared)
     r = _redis()
     try:
-        glob = f"{KV_PREFIX}{pattern}*" if pattern else f"{KV_PREFIX}*"
+        glob = f"{kv_prefix}{pattern}*" if pattern else f"{kv_prefix}*"
         keys = [k async for k in r.scan_iter(glob, count=200)]
 
         results = []
         for k in sorted(keys):
             data = await r.hgetall(k)
             ttl_left = await r.ttl(k)
-            name  = _decode(k).replace(KV_PREFIX, "")
+            name  = _decode(k).replace(kv_prefix, "")
             value = _decode(data.get(b"value", b""))
             label = _decode(data.get(b"label", b""))
             tags_ = _decode(data.get(b"tags",  b""))
@@ -255,7 +301,7 @@ async def kv_list(tag: str = "", pattern: str = "") -> str:
 # ── Semantic Memory tools ─────────────────────────────────────────────────────
 
 @mcp.tool()
-async def mem_save(text: str, label: str = "", code: str = "", tags: str = "", ttl_days: int = 90) -> str:
+async def mem_save(text: str, label: str = "", code: str = "", tags: str = "", ttl_days: int = 90, shared: bool = False) -> str:
     """Save a fact to semantic memory with a vector embedding for similarity search.
     Use for knowledge that needs to be found by meaning: decisions, patterns, context, docs.
 
@@ -270,17 +316,21 @@ async def mem_save(text: str, label: str = "", code: str = "", tags: str = "", t
       every search hit so popular facts never expire. Only set explicitly when needed:
       ttl_days=365 for long-lived facts, ttl_days=7 for temporary context.
       Do NOT pass ttl_days=0 unless the fact must be permanent (no expiry ever).
+    - shared: OMIT unless this server is running with NAMESPACE set AND the fact
+      should be visible to every other agent/namespace on this instance, not just
+      this one. Default (false) stores in this server's own area.
 
     Returns the memory ID (use mem_delete to remove it).
     """
+    mem_prefix, _, index = _scope(shared)
     embed_input = f"{text}\n{code}" if code else text
     vector_bytes = _encode(await _embed(embed_input))
     mid = str(uuid.uuid4())
 
     r = _redis()
     try:
-        await _ensure_index(r)
-        redis_key = f"{MEM_PREFIX}{mid}"
+        await _ensure_index(r, index, mem_prefix)
+        redis_key = f"{mem_prefix}{mid}"
         mapping = {
             b"text":      text.encode(),
             b"vector":    vector_bytes,
@@ -306,7 +356,7 @@ async def mem_save(text: str, label: str = "", code: str = "", tags: str = "", t
 
 
 @mcp.tool()
-async def mem_search(query: str, tags: str = "", top_k: int = 5) -> str:
+async def mem_search(query: str, tags: str = "", top_k: int = 5, shared: bool = False) -> str:
     """Search semantic memory by meaning — finds relevant facts even without exact word matches.
     Automatically refreshes TTL for every result, so popular memories never expire.
 
@@ -314,10 +364,14 @@ async def mem_search(query: str, tags: str = "", top_k: int = 5) -> str:
     - query (required): Natural language question or topic.
     - tags: Comma-separated tag pre-filter. Example: tags="auth,backend".
     - top_k: Number of results (default 5).
+    - shared: Search this server's own area (default) or the always-available
+      shared area (shared=True). Searches one area at a time — call twice
+      (shared=False then shared=True) to check both; results are never merged.
 
     Call at the start of conversations to load relevant context.
     Results show similarity %, TTL remaining, tags, and memory ID.
     """
+    mem_prefix, _, index = _scope(shared)
     vector_bytes = _encode(await _embed(query))
 
     if tags:
@@ -328,9 +382,9 @@ async def mem_search(query: str, tags: str = "", top_k: int = 5) -> str:
 
     r = _redis()
     try:
-        await _ensure_index(r)
+        await _ensure_index(r, index, mem_prefix)
         raw = await r.execute_command(
-            "FT.SEARCH", INDEX, ft_query,
+            "FT.SEARCH", index, ft_query,
             "PARAMS", "2", "vec", vector_bytes,
             "RETURN", "7", "label", "text", "code", "tags", "timestamp", "score", "ttl_days",
             "SORTBY", "score",
@@ -343,7 +397,7 @@ async def mem_search(query: str, tags: str = "", top_k: int = 5) -> str:
 
         results = []
         for redis_key, fd in docs:
-            mid = redis_key.replace(MEM_PREFIX, "")
+            mid = redis_key.replace(mem_prefix, "")
 
             # Refresh TTL on hit
             ttl_days = int(fd.get("ttl_days", "90") or 90)
@@ -366,20 +420,23 @@ async def mem_search(query: str, tags: str = "", top_k: int = 5) -> str:
 
 
 @mcp.tool()
-async def mem_list(limit: int = 20, tag: str = "") -> str:
+async def mem_list(limit: int = 20, tag: str = "", shared: bool = False) -> str:
     """Browse semantic memories sorted by recency with TTL info.
 
     Parameters:
     - limit: Maximum number of results (default 20).
     - tag: Filter by a single tag. Example: tag='auth'.
+    - shared: Browse this server's own area (default) or the always-available
+      shared area (shared=True). Lists one area at a time, never both.
     """
+    mem_prefix, _, index = _scope(shared)
     r = _redis()
     try:
-        await _ensure_index(r)
+        await _ensure_index(r, index, mem_prefix)
         if tag:
             safe_tag = _escape_tag(_sanitize_tag(tag))
             raw = await r.execute_command(
-                "FT.SEARCH", INDEX, f"@tags:{{{safe_tag}}}",
+                "FT.SEARCH", index, f"@tags:{{{safe_tag}}}",
                 "RETURN", "5", "label", "text", "tags", "timestamp", "ttl_days",
                 "LIMIT", "0", str(limit),
                 "SORTBY", "timestamp", "DESC",
@@ -387,7 +444,7 @@ async def mem_list(limit: int = 20, tag: str = "") -> str:
             results = []
             _, docs = _parse_search_results(raw)
             for redis_key, fd in docs:
-                mid = redis_key.replace(MEM_PREFIX, "")
+                mid = redis_key.replace(mem_prefix, "")
                 ttl_left = await r.ttl(redis_key)
                 dt = _fmt_ts(fd.get("timestamp", 0))
                 label = fd.get("label") or fd.get("text", "")[:60]
@@ -396,13 +453,13 @@ async def mem_list(limit: int = 20, tag: str = "") -> str:
                 line += f"\n{fd.get('text','')[:100]}"
                 results.append(line)
         else:
-            keys = [k async for k in r.scan_iter(f"{MEM_PREFIX}*", count=100)][:limit]
+            keys = [k async for k in r.scan_iter(f"{mem_prefix}*", count=100)][:limit]
             results = []
             for k in keys:
                 data = await r.hgetall(k)
                 if b"vector" not in data:
                     continue
-                mid   = _decode(k).replace(MEM_PREFIX, "")
+                mid   = _decode(k).replace(mem_prefix, "")
                 label_ = _decode(data.get(b"label", b""))
                 text  = _decode(data.get(b"text",  b""))
                 tags_ = _decode(data.get(b"tags",  b""))
@@ -420,12 +477,15 @@ async def mem_list(limit: int = 20, tag: str = "") -> str:
 
 
 @mcp.tool()
-async def mem_delete(memory_id: str) -> str:
+async def mem_delete(memory_id: str, shared: bool = False) -> str:
     """Permanently delete a semantic memory by its ID.
 
     Parameters:
     - memory_id (required): Full UUID or short prefix from mem_save / mem_search / mem_list output.
+    - shared: Must match how the entry was saved (see mem_search) — deletes
+      from that area only.
     """
+    mem_prefix, _, _ = _scope(shared)
     memory_id = memory_id.strip().lower()
     is_full_uuid = bool(_UUID_RE.match(memory_id))
 
@@ -435,12 +495,12 @@ async def mem_delete(memory_id: str) -> str:
     r = _redis()
     try:
         if is_full_uuid:
-            deleted = await r.delete(f"{MEM_PREFIX}{memory_id}")
+            deleted = await r.delete(f"{mem_prefix}{memory_id}")
             if deleted:
                 return f"Deleted mem[{memory_id}]"
             return f"Not found: '{memory_id}'"
 
-        pattern = f"{MEM_PREFIX}{memory_id}*"
+        pattern = f"{mem_prefix}{memory_id}*"
         matches: list[bytes] = []
         cursor = 0
         for _ in range(_MAX_SCAN_ROUNDS):
@@ -456,10 +516,10 @@ async def mem_delete(memory_id: str) -> str:
         if len(matches) == 0:
             return f"Not found: '{memory_id}'"
         if len(matches) > 1:
-            ids = ", ".join(_decode(k).replace(MEM_PREFIX, "") for k in matches[:5])
+            ids = ", ".join(_decode(k).replace(mem_prefix, "") for k in matches[:5])
             return f"Ambiguous ID '{memory_id}', multiple matches: {ids}. Use full UUID."
         deleted = await r.delete(matches[0])
-        full_id = _decode(matches[0]).replace(MEM_PREFIX, "")
+        full_id = _decode(matches[0]).replace(mem_prefix, "")
         return f"Deleted mem[{full_id}]" if deleted else f"Not found: '{memory_id}'"
     finally:
         await r.aclose()
@@ -468,7 +528,7 @@ async def mem_delete(memory_id: str) -> str:
 # ── Unified search ────────────────────────────────────────────────────────────
 
 @mcp.tool()
-async def search(query: str, tags: str = "", top_k: int = 5) -> str:
+async def search(query: str, tags: str = "", top_k: int = 5, shared: bool = False) -> str:
     """Search ALL memory at once — both key-value and semantic.
     Use this as the default search tool. Combines results from both stores.
 
@@ -476,9 +536,13 @@ async def search(query: str, tags: str = "", top_k: int = 5) -> str:
     - query (required): Natural language question, topic, or key name.
     - tags: Comma-separated tag pre-filter.
     - top_k: Max semantic results (default 5). All matching kv entries are always included.
+    - shared: Search this server's own area (default) or the always-available
+      shared area (shared=True). Searches one area at a time — call twice to
+      check both; results are never merged.
 
     Returns kv matches (by key/value substring) + semantic matches (by meaning), clearly separated.
     """
+    _, kv_prefix, _ = _scope(shared)
     parts = []
 
     # 1. Search kv by substring in key and value
@@ -486,9 +550,9 @@ async def search(query: str, tags: str = "", top_k: int = 5) -> str:
     try:
         kv_results = []
         q_lower = query.lower()
-        async for k in r.scan_iter(f"{KV_PREFIX}*", count=200):
+        async for k in r.scan_iter(f"{kv_prefix}*", count=200):
             data = await r.hgetall(k)
-            name  = _decode(k).replace(KV_PREFIX, "")
+            name  = _decode(k).replace(kv_prefix, "")
             value = _decode(data.get(b"value", b""))
             label = _decode(data.get(b"label", b""))
             tags_ = _decode(data.get(b"tags",  b""))
@@ -514,7 +578,7 @@ async def search(query: str, tags: str = "", top_k: int = 5) -> str:
         parts.append("── Key-Value matches ──\n" + "\n".join(kv_results))
 
     # 2. Semantic search
-    mem_result = await mem_search(query=query, tags=tags, top_k=top_k)
+    mem_result = await mem_search(query=query, tags=tags, top_k=top_k, shared=shared)
     if mem_result and mem_result != "No memories found.":
         parts.append("── Semantic matches ──\n" + mem_result)
 

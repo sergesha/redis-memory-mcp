@@ -10,6 +10,7 @@ Long-term self-managing memory for LLM agents (Cursor, Claude Code, etc.) via [M
 - **Key-value store** (`kv_*`) — instant O(1) lookup for named facts
 - **Auto-expiry** — TTL resets on every read; unused facts expire, popular ones live forever
 - **Multi-project** — `NAMESPACE` isolates data between projects/agents; `tags` filter within one
+- **Dual-scope access** — every tool call takes `shared: bool`, so one client can reach both its own namespaced area and the always-present shared area, per call
 - **Shared deployment** — `REDIS_MEMORY_MCP_MODE=shared` lets many agents reuse one backend instead of each starting its own
 - **Self-contained** — Docker stack: Redis Stack + HuggingFace TEI embeddings + MCP server
 
@@ -55,19 +56,21 @@ Works automatically via `.mcp.json` in the repo root when using as a Claude plug
 
 | Tool | Description |
 |------|-------------|
-| `kv_set(key, value, tags?, ttl_days?)` | Store a named fact |
-| `kv_get(key)` | Retrieve by exact key (refreshes TTL) |
-| `kv_delete(key)` | Delete by key |
-| `kv_list(tag?, pattern?)` | List entries with filtering |
+| `kv_set(key, value, tags?, ttl_days?, shared?)` | Store a named fact |
+| `kv_get(key, shared?)` | Retrieve by exact key (refreshes TTL) |
+| `kv_delete(key, shared?)` | Delete by key |
+| `kv_list(tag?, pattern?, shared?)` | List entries with filtering |
 
 ### Semantic Memory — vector search
 
 | Tool | Description |
 |------|-------------|
-| `mem_save(text, code?, tags?, ttl_days?)` | Save fact with embedding |
-| `mem_search(query, tags?, top_k?)` | Find by meaning (refreshes TTL on hits) |
-| `mem_list(limit?, tag?)` | Browse by recency |
-| `mem_delete(memory_id)` | Delete by ID |
+| `mem_save(text, code?, tags?, ttl_days?, shared?)` | Save fact with embedding |
+| `mem_search(query, tags?, top_k?, shared?)` | Find by meaning (refreshes TTL on hits) |
+| `mem_list(limit?, tag?, shared?)` | Browse by recency |
+| `mem_delete(memory_id, shared?)` | Delete by ID |
+
+`shared` (default `false`, all tools) — see [`shared` — reaching both areas from one client](#shared--reaching-both-areas-from-one-client) below.
 
 ## TTL & Auto-Expiry
 
@@ -132,11 +135,26 @@ Sharing a backend does **not** mean sharing data — see `NAMESPACE` below for i
 `NAMESPACE` fixes that at the key level. Set once per MCP client (e.g. `-e NAMESPACE=my-project`), it prefixes every key and picks a dedicated search index, so two namespaces cannot see or overwrite each other's data no matter what tags (or no tags) are passed:
 
 ```
-NAMESPACE unset      → mem:{id}       kv:{key}       idx:memories            (previous behavior, unchanged)
-NAMESPACE=my-project  → mem:my-project:{id}  kv:my-project:{key}  idx:memories:my-project
+NAMESPACE unset      → mem:{id}              kv:{key}              idx:memories            (previous behavior, unchanged)
+NAMESPACE=my-project → ns:my-project:mem:{id} ns:my-project:kv:{key} idx:memories:my-project
 ```
 
+(Namespaced keys are prefixed with `ns:{NAMESPACE}:`, not `mem:{NAMESPACE}:` — deliberately not a string extension of the base `mem:`/`kv:` prefixes. RediSearch's `FT.CREATE ... PREFIX` match is a plain string-prefix test, so a namespaced prefix that merely extends the base one would make the base index also pick up every namespace's keys once both exist. Keeping the two prefix sets disjoint avoids that.)
+
 Combine with shared deployment as needed: same backend + no `NAMESPACE` = one shared memory across every agent; same backend + distinct `NAMESPACE` per agent = shared infrastructure, isolated data.
+
+### `shared` — reaching both areas from one client
+
+Every `kv_*`/`mem_*` tool also takes a `shared: bool = false` parameter, independent of `NAMESPACE`. This is a **per-call** choice, not a per-client one: a single MCP client running with `NAMESPACE=my-project` can write/read its own isolated area (`shared=false`, the default) *and* the always-present fleet-wide area (`shared=true`) — without a second registration, second backend, or second running process.
+
+```
+kv_set('db-url', '...')                    # own area (NAMESPACE's, or base if NAMESPACE unset)
+kv_set('db-url', '...', shared=True)       # base/shared area, regardless of NAMESPACE
+mem_search('deploy steps')                 # searches own area only
+mem_search('deploy steps', shared=True)    # searches shared area only — never both, no merging
+```
+
+There's no automatic fallback between the two: a call touches exactly one area, and the caller decides which by setting `shared`. Reading something saved with `shared=True` requires `shared=True` on the read too, or it reports "not found" even though the entry exists in the other area.
 
 ## Redis UI
 
