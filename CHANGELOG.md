@@ -5,6 +5,13 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0](https://github.com/sergesha/redis-memory-mcp/compare/v0.2.3...v0.3.0) (2026-07-01)
+
+
+### Features
+
+* add shared deployment mode and NAMESPACE data isolation ([#10](https://github.com/sergesha/redis-memory-mcp/issues/10)) ([c9fc44e](https://github.com/sergesha/redis-memory-mcp/commit/c9fc44eac64b5d71e27a09aa3b768aec74bbfacf))
+
 ## [0.2.3](https://github.com/sergesha/redis-memory-mcp/compare/v0.2.2...v0.2.3) (2026-06-20)
 
 
