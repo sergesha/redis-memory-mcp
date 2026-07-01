@@ -5,6 +5,13 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0](https://github.com/sergesha/redis-memory-mcp/compare/v0.3.0...v0.4.0) (2026-07-01)
+
+
+### Features
+
+* add per-call shared/own scope access alongside NAMESPACE ([#12](https://github.com/sergesha/redis-memory-mcp/issues/12)) ([365cbc0](https://github.com/sergesha/redis-memory-mcp/commit/365cbc0671e6b7e34127464ed47af7e5afaa6003))
+
 ## [0.3.0](https://github.com/sergesha/redis-memory-mcp/compare/v0.2.3...v0.3.0) (2026-07-01)
 
 
