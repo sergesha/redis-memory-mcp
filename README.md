@@ -9,7 +9,8 @@ Long-term self-managing memory for LLM agents (Cursor, Claude Code, etc.) via [M
 - **Semantic search** (`mem_*`) — save facts with vector embeddings, find by meaning
 - **Key-value store** (`kv_*`) — instant O(1) lookup for named facts
 - **Auto-expiry** — TTL resets on every read; unused facts expire, popular ones live forever
-- **Multi-project** — tag-based isolation between projects
+- **Multi-project** — `NAMESPACE` isolates data between projects/agents; `tags` filter within one
+- **Shared deployment** — `REDIS_MEMORY_MCP_MODE=shared` lets many agents reuse one backend instead of each starting its own
 - **Self-contained** — Docker stack: Redis Stack + HuggingFace TEI embeddings + MCP server
 
 ## Quick Start
@@ -105,8 +106,37 @@ Works automatically via `.mcp.json` in the repo root when using as a Claude plug
 |----------|---------|-------------|
 | `REDIS_URL` | `redis://localhost:6379/0` | Redis connection URL |
 | `EMBED_URL` | `http://localhost:8081` | TEI embeddings endpoint |
-| `INDEX_NAME` | `idx:memories` | Redis search index name |
+| `INDEX_NAME` | `idx:memories` (or `idx:memories:{NAMESPACE}`, see below) | Redis search index name |
+| `NAMESPACE` | unset | Isolates `kv_*`/`mem_*` data on a shared instance — see below |
 | `DEFAULT_TTL` | `7776000` (90 days) | Default TTL in seconds |
+| `REDIS_MEMORY_MCP_MODE` | `dedicated` | `start.sh` only — see Shared Deployment below |
+
+### Shared Deployment (one backend, many agents)
+
+By default (`start.sh`, mode `dedicated`) every invocation brings up its own Redis Stack + TEI containers — fine for a single user on a laptop, wasteful when several agents share one machine (a fleet of Claude Code agents, for example): each would spin up a duplicate, unused backend.
+
+`REDIS_MEMORY_MCP_MODE=shared` skips that: it requires `REDIS_URL` and `EMBED_URL` to already point at a backend started elsewhere, and connects to it instead of starting a new one. Typical layout — one user/process owns the backend (plain `docker compose up -d redis embeddings redis-init`, no `start.sh` involved), every other user's MCP client config runs `start.sh` with:
+
+```bash
+REDIS_MEMORY_MCP_MODE=shared
+REDIS_URL=redis://<backend-host>:6379/0
+EMBED_URL=http://<backend-host>:8081
+```
+
+Sharing a backend does **not** mean sharing data — see `NAMESPACE` below for isolating agents that happen to point at the same Redis/TEI.
+
+### NAMESPACE (data isolation on a shared instance)
+
+`tags` (accepted by `kv_set`/`mem_save`, used as an optional filter by `mem_search`/`kv_list`/`mem_list`) are a same-namespace filter, not an isolation boundary: `kv_get`/`kv_set` operate on an exact key with no tag involved at all, so two agents on a shared instance calling `kv_set('database-url', ...)` would collide regardless of tags, and an untagged `mem_search` sees every agent's memories.
+
+`NAMESPACE` fixes that at the key level. Set once per MCP client (e.g. `-e NAMESPACE=my-project`), it prefixes every key and picks a dedicated search index, so two namespaces cannot see or overwrite each other's data no matter what tags (or no tags) are passed:
+
+```
+NAMESPACE unset      → mem:{id}       kv:{key}       idx:memories            (previous behavior, unchanged)
+NAMESPACE=my-project  → mem:my-project:{id}  kv:my-project:{key}  idx:memories:my-project
+```
+
+Combine with shared deployment as needed: same backend + no `NAMESPACE` = one shared memory across every agent; same backend + distinct `NAMESPACE` per agent = shared infrastructure, isolated data.
 
 ## Redis UI
 
