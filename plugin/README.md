@@ -1,5 +1,7 @@
 # redis-memory-mcp
 
+> This repo is no longer developed — see [sergesha/claude-essentials](https://github.com/sergesha/claude-essentials/tree/main/redis-memory-mcp).
+
 > Persistent cross-session memory for AI agents
 
 ## Tools
