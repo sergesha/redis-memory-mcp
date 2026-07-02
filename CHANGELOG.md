@@ -5,6 +5,13 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1](https://github.com/sergesha/redis-memory-mcp/compare/v0.4.0...v0.4.1) (2026-07-02)
+
+
+### Bug Fixes
+
+* redirect start.sh to sergesha/claude-essentials ([#14](https://github.com/sergesha/redis-memory-mcp/issues/14)) ([8d7bb04](https://github.com/sergesha/redis-memory-mcp/commit/8d7bb04554d4e45ac7cbbb153edf03e09aecf728))
+
 ## [0.4.0](https://github.com/sergesha/redis-memory-mcp/compare/v0.3.0...v0.4.0) (2026-07-01)
 
 
