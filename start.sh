@@ -3,7 +3,17 @@
 # All setup output goes to stderr; only MCP server uses stdout (JSON-RPC)
 set -e
 
-REPO="sergesha/redis-memory-mcp"
+# development of redis-memory-mcp moved to sergesha/claude-essentials at v0.5.0
+# (as its own independently-versioned package in that marketplace repo). This
+# repo is no longer developed -- this file only redirects to it, so every
+# existing installation (which curls THIS file from `main`) transparently
+# picks up new releases there with zero config changes on the caller's side.
+REPO="sergesha/claude-essentials"
+# redis-memory-mcp is one of several independently-versioned packages in
+# $REPO (a monorepo) -- its tags are prefixed "redis-memory-mcp-v...", never
+# bare "v...", so release lookups must filter by that prefix rather than
+# take the repo's single "latest release" (ambiguous with other packages).
+TAG_PREFIX="redis-memory-mcp-v"
 REF="${REDIS_MEMORY_MCP_REF:-}"
 WORK_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/redis-memory-mcp"
 REF_FILE="$WORK_DIR/.installed-ref"
@@ -12,16 +22,18 @@ mkdir -p "$WORK_DIR"
 log() { echo "🧠 redis-memory-mcp: $*" >&2; }
 
 latest_release() {
-  # Latest published release tag from GitHub; empty on any failure (network, rate limit, no release).
-  # Bounded timeouts so an offline/slow host fails fast into the fallback chain instead of hanging.
-  curl -fsSL --connect-timeout 5 --max-time 10 "https://api.github.com/repos/$REPO/releases/latest" 2>/dev/null \
-    | grep -m1 '"tag_name"' \
+  # Latest published release tag matching $TAG_PREFIX; empty on any failure
+  # (network, rate limit, no matching release). Bounded timeouts so an
+  # offline/slow host fails fast into the fallback chain instead of hanging.
+  # Releases list is newest-first, so the first match is the latest.
+  curl -fsSL --connect-timeout 5 --max-time 10 "https://api.github.com/repos/$REPO/releases" 2>/dev/null \
+    | grep -m1 "\"tag_name\": *\"$TAG_PREFIX" \
     | sed -E 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/'
 }
 
 # Resolve which ref to install, in order of preference (no version is ever hardcoded here):
-#   1. explicit REDIS_MEMORY_MCP_REF (e.g. v0.2.0, or "main" to track dev)
-#   2. latest published release tag (GitHub API)
+#   1. explicit REDIS_MEMORY_MCP_REF (e.g. redis-memory-mcp-v0.5.0, or "main" to track dev)
+#   2. latest published release tag matching $TAG_PREFIX (GitHub API)
 #   3. the ref already installed here — a transient API failure must not change the version
 #   4. "main" as a last resort on a cold, offline first run
 if [ -z "$REF" ]; then
@@ -57,7 +69,7 @@ if [ "$MODE" = "shared" ] && { [ -z "${REDIS_URL:-}" ] || [ -z "${EMBED_URL:-}" 
   exit 1
 fi
 
-RAW_URL="https://raw.githubusercontent.com/$REPO/$REF"
+RAW_URL="https://raw.githubusercontent.com/$REPO/$REF/redis-memory-mcp"
 # Docker tags must match [A-Za-z0-9_][A-Za-z0-9_.-]{0,127}: allowed chars only,
 # a leading alnum/underscore, and <=128 chars. A ref may contain '/' (branch
 # names), other punctuation, or a leading '.'/'-', so sanitize for the tag while

@@ -1,5 +1,12 @@
 # redis-memory-mcp
 
+> **This repo is no longer developed.** Development continues at
+> [sergesha/claude-essentials](https://github.com/sergesha/claude-essentials/tree/main/redis-memory-mcp)
+> as an independently-versioned package, starting from v0.5.0 (this repo's last release was
+> v0.4.0). `start.sh` here only redirects there now — existing installs that curl this file from
+> `main` pick up new releases automatically, no config changes needed. New installs should use
+> `sergesha/claude-essentials` directly; see its README for install instructions.
+
 > Persistent cross-session memory for AI agents — semantic search + KV store with auto-expiry
 
 Long-term self-managing memory for LLM agents (Cursor, Claude Code, etc.) via [MCP](https://modelcontextprotocol.io).
